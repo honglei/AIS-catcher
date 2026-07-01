@@ -21,19 +21,7 @@
 #include <mutex>
 #include <time.h>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <sys/socket.h>
-#include <netdb.h>
-#define SOCKET int
-#define closesocket close
-#endif
-
-#ifdef __ANDROID__
-#include <netinet/in.h>
-#endif
+#include "SocketUtil.h"
 
 #include "Stream.h"
 #include "Common.h"
@@ -45,7 +33,7 @@
 namespace IO
 {
 
-class SSEConnection
+	class SSEConnection
 	{
 	protected:
 		bool running = false;
@@ -118,9 +106,9 @@ class SSEConnection
 	public:
 		virtual void Request(IO::TCPServerConnection &c, const std::string &msg, bool accept_gzip);
 
-		void Response(IO::TCPServerConnection &c, const std::string &type, const std::string &content, bool gzip = false, bool cache = false, bool cors = false);
-		void Response(IO::TCPServerConnection &c, const std::string &type, const char *data, int len, bool gzip = false, bool cache = false, bool cors = false);
-		void ResponseRaw(IO::TCPServerConnection &c, const std::string &type, const char *data, int len, bool gzip = false, bool cache = false, bool cors = false);
+		void Response(IO::TCPServerConnection &c, const std::string &type, const std::string &content, bool gzip = false, bool cache = false, bool cors = false, int status = 200);
+		void Response(IO::TCPServerConnection &c, const std::string &type, const char *data, int len, bool gzip = false, bool cache = false, bool cors = false, int status = 200);
+		void ResponseRaw(IO::TCPServerConnection &c, const std::string &type, const char *data, int len, bool gzip = false, bool cache = false, bool cors = false, int status = 200);
 
 		void cleanupSSE()
 		{

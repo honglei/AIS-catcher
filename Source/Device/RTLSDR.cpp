@@ -68,7 +68,7 @@ namespace Device
 #ifdef HASRTL_ANDROID
 	void RTLSDR::OpenWithFileDescriptor(int f)
 	{
-		int rc = rtlsdr_open_file_descriptor(&dev, f);
+		int rc = rtlsdr_open_android(&dev, f);
 		if (rc != 0)
 			throw std::runtime_error("RTLSDR: cannot open device (error " + std::to_string(rc) + ": " + libusbErrorName(rc) + ").");
 
@@ -206,7 +206,7 @@ namespace Device
 	void RTLSDR::setBandwidth(int a)
 	{
 #ifndef HASRTLSDR_TUNERBW
-		throw std::runtime_error("RTLSDR: setting of bandwidth not supported in this version of librtlsdr.");
+		Warning() << "RTLSDR: setting of bandwidth not supported in this version of librtlsdr, ignoring.";
 #else
 		if (rtlsdr_set_tuner_bandwidth(dev, a) != 0)
 			throw std::runtime_error("RTLSDR: cannot set bandwidth.");
@@ -215,7 +215,7 @@ namespace Device
 
 	void RTLSDR::setTuner_Gain(FLOAT32 a)
 	{
-		int g = (int)a * 10;
+		int g = (int)(a * 10);
 
 		if (rtlsdr_set_tuner_gain_mode(dev, 1) != 0)
 			throw std::runtime_error("RTLSDR: cannot set gain mode.");

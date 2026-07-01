@@ -27,10 +27,19 @@ namespace IO
 	private:
 		bool include_sample_start = false;
 
+		// live sources flush per message; bulk replays defer flushing to Stop()/buffer-full
+		void flushOut(bool replay)
+		{
+			if (!replay)
+				std::cout.flush();
+		}
+
 	public:
 		int verboseUpdateTime = 3;
 		ScreenOutput() : OutputMessage("Screen") { fmt = MessageFormat::FULL; }
 		virtual ~ScreenOutput() {}
+
+		void Stop() override { std::cout.flush(); }
 
 		void setScreen(const std::string &str)
 		{
@@ -42,11 +51,11 @@ namespace IO
 		using StreamIn<AIS::GPS>::Receive;
 
 		void Connect(Receiver &r);
-		void Receive(const AIS::Message *data, int len, TAG &tag);
-		void Receive(const JSON::JSON *data, int len, TAG &tag);
-		void Receive(const AIS::GPS *data, int len, TAG &tag);
+		void Receive(const AIS::Message *data, int len, TAG &tag) override;
+		void Receive(const JSON::JSON *data, int len, TAG &tag) override;
+		void Receive(const AIS::GPS *data, int len, TAG &tag) override;
 
-		Setting &SetKey(AIS::Keys key, const std::string &arg)
+		Setting &SetKey(AIS::Keys key, const std::string &arg) override
 		{
 			switch (key)
 			{

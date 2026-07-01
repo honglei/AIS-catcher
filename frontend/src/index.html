@@ -52,7 +52,7 @@
 		</div>
 
 		<div title="Toggle full screen mode" data-action="toggleScreenSize" class="header-icon">
-			<i id="screentoggle-id" class="fullscreen_icon" small-icon></i>
+			<i id="screentoggle-id" class="fullscreen_icon small-icon"></i>
 		</div>
 
 		<div id="receiver-btn-wrap" style="display:none; position:relative; align-items:center;">
@@ -198,6 +198,12 @@
 								data-on-input="updateCircleScaleDisplay" />
 						</span>
 					</div>
+					<div>
+						<span>Shipcard Always Top Left</span><span>
+							<input type="checkbox" id="settings_shipcard_top_left"
+								data-on-change="setMapSetting" data-key="shipcard_top_left" />
+						</span>
+					</div>
 
 
 				</section>
@@ -224,6 +230,18 @@
 						<span>Declutter</span><span>
 							<input type="checkbox" id="settings_labels_declutter"
 								data-on-change="setMapSetting" data-key="labels_declutter" />
+						</span>
+					</div>
+					<div>
+						<span>Prioritize Selected Label</span><span>
+							<input type="checkbox" id="settings_labels_prioritize_active"
+								data-on-change="setMapSetting" data-key="labels_prioritize_active" />
+						</span>
+					</div>
+					<div>
+						<span>Show Label Only for Selected</span><span>
+							<input type="checkbox" id="settings_labels_active_only"
+								data-on-change="setMapSetting" data-key="labels_active_only" />
 						</span>
 					</div>
 					<div>
@@ -303,6 +321,27 @@
 						<span>
 							<input type="checkbox" id="settings_show_circle_outline"
 								data-on-change="setMapSetting" data-key="show_circle_outline" />
+						</span>
+					</div>
+				</section>
+				<header>Binary Messages</header>
+				<section>
+					<div>
+						<span>Show on map</span><span>
+							<select id="settings_binary_messages" data-on-change="setBinaryDisplay">
+								<option value="off">Off</option>
+								<option value="badge">Badge</option>
+								<option value="highlight">Badge + highlight</option>
+							</select>
+						</span>
+					</div>
+					<div>
+						<span>Categories</span><span>
+							<select id="settings_binary_categories" multiple size="3" data-on-change="setBinaryCategories">
+								<option value="data">Meteo &amp; sensors</option>
+								<option value="inland">Inland AIS</option>
+								<option value="text">Text messages</option>
+							</select>
 						</span>
 					</div>
 				</section>
@@ -532,6 +571,14 @@
 					tracks</li>
 				<li class="ctx-map noandroid" data-action="startBoxSelect"><i class="timeline_icon"></i>Show tracks in
 					area</li>
+				<li class="ctx-map" data-action="toggleMeasurecard"><svg xmlns="http://www.w3.org/2000/svg"
+						viewBox="0 -960 960 960"
+						style="width:16px;height:16px;margin-right:8px;fill:currentColor;flex-shrink:0">
+						<path
+							d="M160-240q-33 0-56.5-23.5T80-320v-320q0-33 23.5-56.5T160-720h640q33 0 56.5 23.5T880-640v320q0 33-23.5 56.5T800-240H160Zm0-80h640v-320H680v160h-80v-160h-80v160h-80v-160h-80v160h-80v-160H160v320Zm120-160h80-80Zm160 0h80-80Zm160 0h80-80Zm-120 0Z" />
+					</svg>Measure distance</li>
+				<li class="ctx-map ctx-removealltracks" data-action="resetTracksFromNow"><i
+						class="timeline_icon"></i>Reset tracks (from now)</li>
 				<li class="ctx-map ctx-removealltracks" data-action="deleteAllTracks"><i
 						class="remove_circle_outline_icon"></i>Hide all tracks</li>
 				<li class="ctx-map" data-action="ToggleFireworks"><i class="explosion_icon"></i><span
@@ -981,25 +1028,20 @@
 				<div class="tablesection">
 					<div class="search-container">
 						<input type="text" class="search-box" id="shipSearch" placeholder="Search for ships...">
-						<div class="ship-table-column-controls">
-							<div class="ship-table-column-dropdown">
-								<button class="ship-table-column-dropdown-toggle" type="button"
-									id="shipTableColumnDropdownToggle">
-									<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 -960 960 960"
-										width="16px" fill="currentColor">
-										<path
-											d="M760-760H599h5-4 160Zm-240 0q0-33 23.5-56.5T600-840h160q33 0 56.5 23.5T840-760v400h-80v-400H600v640q-33 0-56.5-23.5T520-200v-560ZM200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h160q33 0 56.5 23.5T440-760v560q0 33-23.5 56.5T360-120H200Zm160-640H200v560h160v-560Zm0 0H200h160ZM760-40v-80h-80v-80h80v-80h80v80h80v80h-80v80h-80Z" />
-									</svg>
-
-								</button>
-								<div class="ship-table-column-dropdown-menu" id="shipTableColumnVisibilityMenu"></div>
-							</div>
-							<button class="ship-table-column-reset" id="shipTableColumnReset">
-								<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 -960 960 960"
-									width="16px" fill="currentColor">
-									<path
-										d="M280-200v-80h284q63 0 109.5-40T720-420q0-60-46.5-100T564-560H312l104 104-56 56-200-200 200-200 56 56-104 104h252q97 0 166.5 63T800-420q0 94-69.5 157T564-200H280Z" />
-								</svg> </button>
+						<div class="ship-table-column-dropdown">
+							<button class="ship-table-columns-btn" type="button" id="shipTableColumnDropdownToggle">
+								<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+									stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+									<rect x="3" y="3" width="18" height="18" rx="2" />
+									<path d="M12 3v18" />
+								</svg>
+								<span>Columns</span>
+								<svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"
+									stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+									<polyline points="6 9 12 15 18 9" />
+								</svg>
+							</button>
+							<div class="ship-table-column-dropdown-menu" id="shipTableColumnVisibilityMenu"></div>
 						</div>
 					</div>
 					<div id="shipTable"></div>
@@ -1296,24 +1338,23 @@
 
 
 				<div title="Counters"
-					class="ol-control ol-unselectable ol-control-custom button-control-box map-button-box nokiosk"
-					style="top: 10px; border-radius: 17px;">
+					class="ol-control ol-unselectable ol-control-custom button-control-box map-button-box map-pill nokiosk"
+					style="top: 10px;">
 					<button type="button" data-action="toggleStatcard" class="btn btn-primary map-button"
-						style="font-size: 10px; border-radius: 2px; border-top-right-radius: 17px; border-top-left-radius: 17px;">
+						style="font-size: 10px;">
 						<span id="markerCount">0</span>
 					</button>
-					<button type="button" data-action="toggleTablecard" class="btn btn-primary map-button"
-						style="border-radius: 2px;">
+					<button type="button" data-action="toggleTablecard" class="btn btn-primary map-button">
 						<svg xmlns="http://www.w3.org/2000/svg" height="12" viewBox="0 -960 960 960" width="12">
 							<path
 								d="M158-200 82-468q-3-12 2.5-28t23.5-22l52-18v-184q0-33 23.5-56.5T240-800h120v-120h240v120h120q33 0 56.5 23.5T800-720v184l52 18q21 8 25 23.5t1 26.5l-76 268q-50 0-91-23.5T640-280q-30 33-71 56.5T480-200q-48 0-89-23.5T320-280q-30 33-71 56.5T158-200ZM80-40v-80h80q42 0 83-13t77-39q36 26 77 38t83 12q42 0 83-12t77-38q36 26 77 39t83 13h80v80h-80q-42 0-82-10t-78-30q-38 20-78.5 30T480-40q-41 0-81.5-10T320-80q-38 20-78 30t-82 10H80Zm160-522 240-78 240 78v-158H240v158Z" />
 						</svg>
 					</button>
-					<button type="button" data-action="toggleMeasurecard" class="btn btn-primary map-button"
-						style="border-radius: 2px; border-bottom-left-radius: 17px; border-bottom-right-radius: 17px;">
-						<svg xmlns="http://www.w3.org/2000/svg" height="12px" viewBox="0 -960 960 960" width="12px">
+					<button title="Settings" type="button" data-action="mapSettingsContextMenu"
+						class="btn btn-primary map-button color-grey">
+						<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24">
 							<path
-								d="M160-240q-33 0-56.5-23.5T80-320v-320q0-33 23.5-56.5T160-720h640q33 0 56.5 23.5T880-640v320q0 33-23.5 56.5T800-240H160Zm0-80h640v-320H680v160h-80v-160h-80v160h-80v-160h-80v160h-80v-160H160v320Zm120-160h80-80Zm160 0h80-80Zm160 0h80-80Zm-120 0Z" />
+								d="M240-400q-33 0-56.5-23.5T160-480q0-33 23.5-56.5T240-560q33 0 56.5 23.5T320-480q0 33-23.5 56.5T240-400Zm240 0q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm240 0q-33 0-56.5-23.5T640-480q0-33 23.5-56.5T720-560q33 0 56.5 23.5T800-480q0 33-23.5 56.5T720-400Z" />
 						</svg>
 					</button>
 
@@ -1348,34 +1389,26 @@
 					</svg>
 				</div>
 
-				<div title="Settings"
-					class="ol-control ol-unselectable ol-control-custom button-control-box map-button-box nokiosk"
-					style=" bottom: 140px; border-radius: 5px;">
-					<button type="button" data-action="mapSettingsContextMenu"
-						class="btn btn-primary map-button color-grey">
-						<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24">
-							<path
-								d="M240-400q-33 0-56.5-23.5T160-480q0-33 23.5-56.5T240-560q33 0 56.5 23.5T320-480q0 33-23.5 56.5T240-400Zm240 0q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm240 0q-33 0-56.5-23.5T640-480q0-33 23.5-56.5T720-560q33 0 56.5 23.5T800-480q0 33-23.5 56.5T720-400Z" />
-						</svg>
-					</button>
+				<div id="map-attribution-foldout" class="ol-control ol-unselectable map-attribution-foldout"
+					style="display: none;">
+					<span id="map_attributions"></span>
+				</div>
+
+				<div class="ol-control ol-unselectable ol-control-custom button-control-box map-button-box nokiosk"
+					style="bottom: 30px;">
 					<button title="Toggle Community Pane" type="button" id="xchange" data-action="toggleCommunityPane"
 						class="noandroid btn btn-primary map-button fill-red">
-
 						<svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 -960 960 960" width="20">
 							<path
 								d="M475-160q4 0 8-2t6-4l328-328q12-12 17.5-27t5.5-30q0-16-5.5-30.5T817-607L647-777q-11-12-25.5-17.5T591-800q-15 0-30 5.5T534-777l-11 11 74 75q15 14 22 32t7 38q0 42-28.5 70.5T527-522q-20 0-38.5-7T456-550l-75-74-175 175q-3 3-4.5 6.5T200-435q0 8 6 14.5t14 6.5q4 0 8-2t6-4l136-136 56 56-135 136q-3 3-4.5 6.5T285-350q0 8 6 14t14 6q4 0 8-2t6-4l136-135 56 56-135 136q-3 2-4.5 6t-1.5 8q0 8 6 14t14 6q4 0 7.5-1.5t6.5-4.5l136-135 56 56-136 136q-3 3-4.5 6.5T454-180q0 8 6.5 14t14.5 6Zm-1 80q-37 0-65.5-24.5T375-166q-34-5-57-28t-28-57q-34-5-56.5-28.5T206-336q-38-5-62-33t-24-66q0-20 7.5-38.5T149-506l232-231 131 131q2 3 6 4.5t8 1.5q9 0 15-5.5t6-14.5q0-4-1.5-8t-4.5-6L398-777q-11-12-25.5-17.5T342-800q-15 0-30 5.5T285-777L144-635q-9 9-15 21t-8 24q-2 12 0 24.5t8 23.5l-58 58q-17-23-25-50.5T40-590q2-28 14-54.5T87-692l141-141q24-23 53.5-35t60.5-12q31 0 60.5 12t52.5 35l11 11 11-11q24-23 53.5-35t60.5-12q31 0 60.5 12t52.5 35l169 169q23 23 35 53t12 61q0 31-12 60.5T873-437L545-110q-14 14-32.5 22T474-80Zm-99-560Z" />
 						</svg>
 					</button>
-				</div>
-
-				<div class="ol-control ol-unselectable ol-control-custom button-control-box map-button-box nokiosk"
-					style=" bottom: 30px; border-radius: 5px;">
-					<button type="button" id="zoom-in" class="btn btn-primary map-button">
+					<button title="Zoom in" type="button" id="zoom-in" class="btn btn-primary map-button">
 						<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24">
 							<path d="M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z" />
 						</svg>
 					</button>
-					<button type="button" id="zoom-out" class="btn btn-primary map-button">
+					<button title="Zoom out" type="button" id="zoom-out" class="btn btn-primary map-button">
 						<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24">
 							<path d="M200-440v-80h560v80H200Z" />
 						</svg>
@@ -1387,11 +1420,13 @@
 								d="M480-118 120-398l66-50 294 228 294-228 66 50-360 280Zm0-202L120-600l360-280 360 280-360 280Zm0-280Zm0 178 230-178-230-178-230 178 230 178Z" />
 						</svg>
 					</button>
-				</div>
-
-				<div class="ol-control ol-unselectable ol-control-custom button-control-box map-button-box"
-					style="padding: 3px; bottom: 0px; right: 10px; font-size: 8px; border-radius: 0px;">
-					<span id="map_attributions"></span>
+					<button title="Map attribution" type="button" data-action="toggleAttribution"
+						class="btn btn-primary map-button color-grey">
+						<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24">
+							<path
+								d="M440-280h80v-240h-80v240Zm40-320q17 0 28.5-11.5T520-640q0-17-11.5-28.5T480-680q-17 0-28.5 11.5T440-640q0 17 11.5 28.5T480-600Zm0 520q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z" />
+						</svg>
+					</button>
 				</div>
 			</div>
 		</div>

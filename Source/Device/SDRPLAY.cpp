@@ -31,29 +31,20 @@ namespace Device {
 	int SDRPLAY::API_count = 0;
 
 	SDRPLAY::SDRPLAY() : Device(Format::CF32, 2304000, Type::SDRPLAY, "SDRPLAY") {
-		float version = 0.0;
+		if (API_count == 0 && sdrplay_api_Open() != sdrplay_api_Success)
+			return;
 
-		if (API_count++ == 0 && sdrplay_api_Open() != sdrplay_api_Success) {
-			running = false;
-			return;
-		}
-		if (sdrplay_api_ApiVersion(&version) != sdrplay_api_Success) {
-			running = false;
-			return;
-		}
-		if ((int)version != 3) {
-			running = false;
-			return;
-		}
-
+		API_count++;
 		running = true;
 	}
 
 	SDRPLAY::~SDRPLAY() {
-		if (--API_count == 0) sdrplay_api_Close();
+		if (running && --API_count == 0) sdrplay_api_Close();
 	}
 
 	void SDRPLAY::Open(uint64_t h) {
+		if (!running) throw std::runtime_error("SDRPLAY: API v3.x not running");
+
 		sdrplay_api_ErrT err;
 		unsigned int DeviceCount;
 
@@ -61,13 +52,13 @@ namespace Device {
 		sdrplay_api_DeviceT devices[SDRPLAY_MAX_DEVICES];
 		sdrplay_api_GetDevices(devices, &DeviceCount, SDRPLAY_MAX_DEVICES);
 
-		if (DeviceCount < h) throw std::runtime_error("SDRPLAY: cannot open device, handle not available.");
+		if (h >= DeviceCount) throw std::runtime_error("SDRPLAY: cannot open device, handle not available.");
 
 		device = devices[h];
 
 		err = sdrplay_api_SelectDevice(&device);
 		if (err != sdrplay_api_Success) {
-			Error() << sdrplay_api_GetErrorString(err) << std::endl;
+			Error() << sdrplay_api_GetErrorString(err);
 			sdrplay_api_UnlockDeviceApi();
 			throw std::runtime_error("SDRPLAY: cannot open device");
 		}
@@ -156,7 +147,7 @@ namespace Device {
 
 	void SDRPLAY::callback_event(sdrplay_api_EventT eventId, sdrplay_api_TunerSelectT tuner, sdrplay_api_EventParamsT* params) {
 		if (eventId == sdrplay_api_DeviceRemoved) {
-			Error() << "SDRPLAY: device disconnected" << std::endl;
+			Error() << "SDRPLAY: device disconnected";
 			Stop();
 		}
 	}
@@ -171,7 +162,7 @@ namespace Device {
 			}
 
 			if (!fifo.Push((char*)output.data(), len * sizeof(CFLOAT32)))
-				Error() << "SDRPLAY: buffer overrun." << std::endl;
+				Error() << "SDRPLAY: buffer overrun.";
 		}
 	}
 
@@ -183,13 +174,22 @@ namespace Device {
 				fifo.Pop();
 			}
 			else if (isStreaming())
-				Error() << "SDRPLAY: timeout." << std::endl;
+				Error() << "SDRPLAY: timeout.";
 		}
 	}
 
 	void SDRPLAY::getDeviceList(std::vector<Description>& DeviceList) {
 		unsigned int DeviceCount;
-		if (!running) throw std::runtime_error("SDRPLAY: API v3.x not running");
+		if (!running) {
+			Warning() << "SDRPLAY: API v3.x not running, no SDRplay devices available.";
+			return;
+		}
+
+		float version = 0.0;
+		if (sdrplay_api_ApiVersion(&version) != sdrplay_api_Success || (int)version != 3) {
+			Warning() << "SDRPLAY: API version is not 3.x, no SDRplay devices available.";
+			return;
+		}
 
 		sdrplay_api_LockDeviceApi();
 		sdrplay_api_DeviceT devices[SDRPLAY_MAX_DEVICES];
@@ -227,13 +227,14 @@ namespace Device {
 		case AIS::KEY_SETTING_GRDB:
 			gRdB = Util::Parse::Integer(arg, 0, 59);
 			break;
-		case AIS::KEY_SETTING_ANTENNA:
-			if (antenna == 'A' || antenna == 'B') {
-				antenna = arg[0];
-			}
+		case AIS::KEY_SETTING_ANTENNA: {
+			char a = arg.empty() ? 0 : (arg[0] & ~0x20);
+			if (a == 'A' || a == 'B' || a == 'C')
+				antenna = a;
 			else
 				throw std::runtime_error("SDRPLAY: invalid antenna.");
 			break;
+		}
 		default:
 			Device::SetKey(key, arg);
 			break;

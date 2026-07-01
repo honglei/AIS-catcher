@@ -224,10 +224,14 @@ std::string PluginManager::render() const
 
 void SSEStreamer::Receive(const JSON::JSON *data, int len, TAG &tag)
 {
-	if (server)
+	if (!server)
+		return;
+
+	std::time_t now = std::time(nullptr);
+
+	for (int j = 0; j < len; j++)
 	{
-		AIS::Message *m = (AIS::Message *)data[0].binary;
-		std::time_t now = std::time(nullptr);
+		AIS::Message *m = (AIS::Message *)data[j].binary;
 		char channel = m->getChannel();
 
 		if (!m->sentences().empty())
@@ -296,6 +300,7 @@ WebViewer::WebViewer() : Setting("WebViewer"),
 	os(JSON::Writer::escape(Util::Helper::getOS())),
 	hardware(JSON::Writer::escape(Util::Helper::getHardware()))
 {
+	states.push_back(std::unique_ptr<ReceiverTracker>(new ReceiverTracker("All")));
 }
 
 std::string WebViewer::decodeNMEAtoJSON(const std::string &nmea_input, bool enhanced)
@@ -347,6 +352,28 @@ std::string WebViewer::decodeNMEAtoJSON(const std::string &nmea_input, bool enha
 	w.endArray();
 	w.finish();
 	return result;
+}
+
+// Raw NMEA never contains '%' or '+', so decoding is safe whether or not
+// the client percent-encoded its input.
+static std::string urlDecode(const std::string &in)
+{
+	std::string out;
+	out.reserve(in.size());
+
+	for (std::size_t i = 0; i < in.size(); i++)
+	{
+		if (in[i] == '+')
+			out += ' ';
+		else if (in[i] == '%' && i + 2 < in.size() && Util::Convert::isHexDigit(in[i + 1]) && Util::Convert::isHexDigit(in[i + 2]))
+		{
+			out += (char)((Util::Convert::hexDigitValue(in[i + 1]) << 4) | Util::Convert::hexDigitValue(in[i + 2]));
+			i += 2;
+		}
+		else
+			out += in[i];
+	}
+	return out;
 }
 
 std::vector<std::string> WebViewer::parsePath(const std::string &url)
@@ -432,8 +459,6 @@ void WebViewer::addFileSystemTilesSource(const std::string &directoryPath, bool 
 
 void WebViewer::Clear()
 {
-	if (states.empty())
-		return;
 	states[0]->clear();
 }
 
@@ -805,8 +830,6 @@ std::time_t WebViewer::parseSinceParam(const std::string &query)
 
 ReceiverTracker *WebViewer::getState(int idx)
 {
-	if (states.empty())
-		return nullptr;
 	if (idx < 0 || idx >= (int)states.size())
 		return states[0].get();
 	return states[idx].get();
@@ -818,19 +841,10 @@ void WebViewer::connect(const std::vector<std::unique_ptr<Receiver>> &receivers)
 
 	bool multi = receivers.size() > 1 && !filter.hasIDFilter() && groups_in == 0xFFFFFFFFFFFFFFFF;
 
-	states.push_back(std::unique_ptr<ReceiverTracker>(new ReceiverTracker()));
-	states[0]->label = "All";
-
 	for (int k = 0; k < (int)receivers.size(); k++)
 	{
 		Receiver &r = *receivers[k];
 		ReceiverTracker *per = nullptr;
-
-		if (multi)
-		{
-			states.push_back(std::unique_ptr<ReceiverTracker>(new ReceiverTracker()));
-			per = states.back().get();
-		}
 
 		bool rec_details = false;
 		for (int j = 0; j < r.Count(); j++)
@@ -841,8 +855,12 @@ void WebViewer::connect(const std::vector<std::unique_ptr<Receiver>> &receivers)
 				{
 					auto *device = r.getDeviceManager().getDevice();
 
-					if (per)
+					if (multi)
+					{
+						states.push_back(std::unique_ptr<ReceiverTracker>(new ReceiverTracker()));
+						per = states.back().get();
 						per->setDevice(device);
+					}
 
 					states[0]->appendDevice(device, newline);
 					rec_details = true;
@@ -871,6 +889,41 @@ void WebViewer::connect(const std::vector<std::unique_ptr<Receiver>> &receivers)
 
 	Debug() << "Mutex: WebViewer sinks self-lock (DB/PlaneDB), raw_counter atomic (" << receivers.size() << " receivers)";
 
+	raw_counter.setFilter(filter);
+}
+
+void WebViewer::setDeviceDescription(const std::string &product, const std::string &vendor, const std::string &serial)
+{
+	pending_product = product;
+	pending_vendor = vendor;
+	pending_serial = serial;
+
+	if (!product.empty())
+		states[0]->product = product;
+	if (!vendor.empty())
+		states[0]->vendor = vendor;
+	if (!serial.empty())
+		states[0]->serial = serial;
+}
+
+void WebViewer::connect(AIS::Model &model, Connection<JSON::JSON> &json, Device::Device &device)
+{
+	states[0]->setDevice(&device);
+	states[0]->label = "All";
+	states[0]->model_name = model.getName();
+
+	// Android supplies USB product/vendor/serial out-of-band via setDeviceDescription().
+	if (!pending_product.empty())
+		states[0]->product = pending_product;
+	if (!pending_vendor.empty())
+		states[0]->vendor = pending_vendor;
+	if (!pending_serial.empty())
+		states[0]->serial = pending_serial;
+
+	states[0]->connectJSON(json);
+	device >> raw_counter;
+
+	states[0]->applyConfig(tracking, filter);
 	raw_counter.setFilter(filter);
 }
 
@@ -904,8 +957,7 @@ void WebViewer::start()
 
 	if (realtime)
 	{
-		if (!states.empty())
-			states[0]->connectSink(sse_streamer);
+		states[0]->connectSink(sse_streamer);
 		sse_streamer.setSSE(this);
 	}
 
@@ -920,7 +972,7 @@ void WebViewer::start()
 		s->wireStreams();
 	}
 
-	if (supportPrometheus && !states.empty())
+	if (supportPrometheus)
 		states[0]->connectSink(dataPrometheus);
 
 	if (firstport && lastport)
@@ -949,6 +1001,9 @@ void WebViewer::start()
 
 void WebViewer::close()
 {
+	stopThread();
+	logger.Stop();
+
 	run = false;
 	backup.stop();
 
@@ -957,7 +1012,7 @@ void WebViewer::close()
 		Error() << "Statistics - cannot write file: " << backup.getFilename();
 	}
 
-	if (stats_on_close && !states.empty())
+	if (stats_on_close)
 	{
 		std::ostringstream ss;
 		ss << "\n";
@@ -1163,7 +1218,7 @@ const WebViewer::Route WebViewer::routes[] = {
 		 {
 			 if (a.empty() || a.size() > 1024)
 				 return std::string("{\"error\":\"Input size limit exceeded\"}");
-			 std::string result = decodeNMEAtoJSON(a, true);
+			 std::string result = decodeNMEAtoJSON(urlDecode(a), true);
 			 return result == "[]" ? std::string("{\"error\":\"No valid AIS messages decoded\"}") : result;
 		 }
 		 catch (const std::exception &e)
@@ -1187,11 +1242,7 @@ const WebViewer::Route WebViewer::routes[] = {
 	// Prometheus metrics
 	{"/metrics", &WebViewer::supportPrometheus, "text/plain",
 	 [](WebViewer *w, ReceiverTracker *, const std::string &)
-	 {
-		 std::string r = w->dataPrometheus.toPrometheus();
-		 w->dataPrometheus.Reset();
-		 return r;
-	 }, true},
+	 { return w->dataPrometheus.toPrometheus(); }, true},
 
 	// Frontend assets
 	{"/custom/plugins.js", nullptr, "application/javascript",
@@ -1235,7 +1286,7 @@ void WebViewer::Request(IO::TCPServerConnection &c, const std::string &response,
 			continue;
 
 		ReceiverTracker *s = getState(parseReceiver(a));
-		Response(c, rt->content_type, rt->handler(this, s, a), use_zlib & gzip, false, rt->cors);
+		Response(c, rt->content_type, rt->handler(this, s, a), use_zlib && gzip, false, rt->cors);
 		return;
 	}
 
@@ -1274,15 +1325,15 @@ void WebViewer::Request(IO::TCPServerConnection &c, const std::string &response,
 
 					if (!data.empty())
 					{
-						Response(c, contentType, (char *)data.data(), data.size(), use_zlib & gzip, true);
+						Response(c, contentType, (char *)data.data(), data.size(), use_zlib && gzip, true);
 						return;
 					}
 				}
 			}
-			Response(c, "text/plain", std::string("Tile not found"), false, true);
+			Response(c, "text/plain", std::string("Tile not found"), false, false, false, 404);
 			return;
 		}
-		Response(c, "text/plain", std::string("Invalid Tile Request"), false, true);
+		Response(c, "text/plain", std::string("Invalid Tile Request"), false, false, false, 400);
 		return;
 	}
 	// Static files

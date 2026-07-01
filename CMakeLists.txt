@@ -1,18 +1,8 @@
 # CMake definitions for AIS-catcher
 
-if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "4.0")
-    cmake_minimum_required(VERSION 4.0)
-    message(STATUS "Using CMake ${CMAKE_VERSION} with 4.0+ features")
-elseif(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.10")
-    # 3.10 is the lowest minimum that newer CMake accepts without a deprecation warning.
-    cmake_minimum_required(VERSION 3.10)
-    message(STATUS "Using CMake ${CMAKE_VERSION} with 3.10+ features")
-elseif(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.02")
-    cmake_minimum_required(VERSION 3.02)
-    message(STATUS "Using CMake ${CMAKE_VERSION} with 3.02+ features")
-else()
-    message(WARNING "CMake ${CMAKE_VERSION} detected. This project is designed for CMake 3.02 or higher.")
-endif()
+# 3.2 floor keeps old distributions working (pre-3.12 CMake reads only the
+# minimum); the 4.0 max suppresses deprecation warnings on newer CMake.
+cmake_minimum_required(VERSION 3.2...4.0)
 
 project(AIS-catcher)
 
@@ -102,14 +92,19 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(SANITIZE "Build with AddressSanitizer + UBSanitizer" OFF)
+option(TSAN "Build with ThreadSanitizer" OFF)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     if(SANITIZE)
         set(OPTIMIZATION_FLAGS "-O1 -g")
         add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address,undefined)
+    elseif(TSAN)
+        set(OPTIMIZATION_FLAGS "-O1 -g")
+        add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=thread)
     else()
-        set(OPTIMIZATION_FLAGS "-Ofast")
+        set(OPTIMIZATION_FLAGS "-O3 -ffast-math")
     endif()
     add_compile_options("-Wall")
     add_compile_options("-Wno-psabi")

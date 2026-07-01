@@ -28,7 +28,7 @@ namespace Device
 	{
 		if (sock != -1)
 		{
-			closesocket(sock);
+			Net::closeSocket(sock);
 			sock = -1;
 		}
 
@@ -69,17 +69,13 @@ namespace Device
 			StopServer();
 			throw std::runtime_error("UDP: cannot set socket option.");
 		}
+#endif
 
-		int flags = fcntl(sock, F_GETFL, 0);
-		if (flags == -1 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1)
+		if (!Net::setNonBlocking(sock))
 		{
 			StopServer();
 			throw std::runtime_error("UDP: cannot make the socket non-blocking.");
 		}
-#else
-		u_long mode = 1; // 1 to enable non-blocking socket
-		ioctlsocket(sock, FIONBIO, &mode);
-#endif
 
 		if (bind(sock, address->ai_addr, address->ai_addrlen) != 0)
 		{
@@ -93,6 +89,7 @@ namespace Device
 	void UDP::Close()
 	{
 		Device::Close();
+		Stop();
 		StopServer();
 	}
 
@@ -123,7 +120,7 @@ namespace Device
 
 	void UDP::Run()
 	{
-		Debug() << "UDP: starting thread.\n";
+		Debug() << "UDP: starting thread.";
 		char buffer[16384];
 		RAW r = {getFormat(), buffer, 0};
 		int nread;
@@ -138,7 +135,12 @@ namespace Device
 					r.size = nread;
 					Send(&r, 1, tag);
 				}
-			} while (nread > 0);
+				else if (nread < 0 && !Net::wouldBlock(Net::lastError()))
+				{
+					Error() << "UDP: receive error: " << Net::errorString(Net::lastError());
+					lost = true;
+				}
+			} while (nread > 0 && isStreaming());
 
 			struct timeval tv;
 			fd_set fds;
@@ -149,7 +151,7 @@ namespace Device
 			tv = {1, 0};
 			select(sock + 1, &fds, nullptr, nullptr, &tv);
 		}
-		Debug() << "UDP: ending thread.\n";
+		Debug() << "UDP: ending thread.";
 	}
 
 	void UDP::applySettings()

@@ -22,7 +22,6 @@
 #include "Convert.h"
 #include "Parse.h"
 #include "Helper.h"
-#include "Receiver.h"
 
 namespace IO
 {
@@ -84,7 +83,7 @@ namespace IO
 
 					for (size_t j = 0; j < nmea.size(); j++)
 					{
-						msg_list.push_back(nmea[j]);
+						enqueue(nmea[j]);
 					}
 				}
 				else
@@ -93,7 +92,7 @@ namespace IO
 					builder.stringify(data[i], s);
 					{
 						const std::lock_guard<std::mutex> lock(msg_list_mutex);
-						msg_list.push_back(std::move(s));
+						enqueue(std::move(s));
 					}
 				}
 			}
@@ -102,7 +101,8 @@ namespace IO
 
 	void HTTPStreamer::Receive(const AIS::GPS *data, int len, TAG &tag)
 	{
-		if (!filter.includeGPS() || len <= 0) return;
+		if (!filter.includeGPS() || len <= 0)
+			return;
 		const std::lock_guard<std::mutex> lock(msg_list_mutex);
 		lat = std::to_string(data[len - 1].getLat());
 		lon = std::to_string(data[len - 1].getLon());
@@ -320,19 +320,15 @@ namespace IO
 
 	bool UDPStreamer::applySocketOptions()
 	{
+		if (!Net::setNonBlocking(sock))
+			return false;
 #ifndef _WIN32
-		int r = fcntl(sock, F_GETFL, 0);
-		if (r < 0) return false;
-		if (fcntl(sock, F_SETFL, r | O_NONBLOCK) < 0) return false;
 		if (broadcast)
 		{
 			int broadcastEnable = 1;
 			if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (char *)&broadcastEnable, sizeof(broadcastEnable)) < 0)
 				return false;
 		}
-#else
-		u_long mode = 1;
-		if (ioctlsocket(sock, FIONBIO, &mode) != 0) return false;
 #endif
 		return true;
 	}
@@ -346,13 +342,13 @@ namespace IO
 			{
 				Info() << "UDP: recreate socket (" << host << ":" << port << ")";
 
-				closesocket(sock);
+				Net::closeSocket(sock);
 				sock = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
 
 				if (sock == -1 || !applySocketOptions())
 				{
 					Critical() << "UDP: cannot recreate socket (" << host << ":" << port << "). Requesting termination.";
-					closesocket(sock);
+					Net::closeSocket(sock);
 					sock = -1;
 					StopRequest();
 					return;
@@ -479,7 +475,7 @@ namespace IO
 
 		if (sock != -1)
 		{
-			closesocket(sock);
+			Net::closeSocket(sock);
 			sock = -1;
 		}
 		if (address != NULL)
@@ -530,37 +526,15 @@ namespace IO
 		if (!filter.includeGPS())
 			return;
 
-		if (fmt == MessageFormat::NMEA)
+		for (int i = 0; i < len; i++)
 		{
+			const std::string line = (fmt == MessageFormat::NMEA ? data[i].getNMEA() : data[i].getJSON()) + "\r\n";
 
-			for (int i = 0; i < len; i++)
+			if (SendTo(line.c_str()) < 0 && !persistent && !stop_requested)
 			{
-
-				if (SendTo((data[i].getNMEA() + "\r\n").c_str()) < 0)
-				{
-					if (!persistent && !stop_requested)
-					{
-						Error() << "TCP feed: requesting termination.";
-						stop_requested = true;
-						StopRequest();
-					}
-				}
-			}
-		}
-		else
-		{
-			for (int i = 0; i < len; i++)
-			{
-
-				if (SendTo((data[i].getJSON() + "\r\n").c_str()) < 0)
-				{
-					if (!persistent && !stop_requested)
-					{
-						Error() << "TCP feed: requesting termination.";
-						stop_requested = true;
-						StopRequest();
-					}
-				}
+				Critical() << "TCP feed: requesting termination.";
+				stop_requested = true;
+				StopRequest();
 			}
 		}
 	}
@@ -576,7 +550,7 @@ namespace IO
 
 			if (SendTo(json.data(), (int)json.size()) < 0 && !persistent && !stop_requested)
 			{
-				Error() << "TCP feed: requesting termination.";
+				Critical() << "TCP feed: requesting termination.";
 				stop_requested = true;
 				StopRequest();
 			}
@@ -610,6 +584,8 @@ namespace IO
 		ss << "TCP feed: open socket for host: " << host << ", port: " << port;
 		ss << ", persist: " << Util::Convert::toString(persistent);
 		ss << ", keep_alive: " << Util::Convert::toString(keep_alive);
+		if (reset > 0)
+			ss << ", reset: " << reset;
 		if (!uuid.empty())
 			ss << ", uuid: " << uuid;
 
@@ -627,6 +603,8 @@ namespace IO
 		tcp.setOptionKey(AIS::KEY_SETTING_PERSIST, Util::Convert::toString(persistent));
 		tcp.setOptionKey(AIS::KEY_SETTING_TIMEOUT, "0");
 		tcp.setOptionKey(AIS::KEY_SETTING_KEEP_ALIVE, Util::Convert::toString(keep_alive));
+		if (reset > 0)
+			tcp.setOptionKey(AIS::KEY_SETTING_RESET, std::to_string(reset));
 
 		connection = &tcp;
 
@@ -667,6 +645,9 @@ namespace IO
 			break;
 		case AIS::KEY_SETTING_PERSIST:
 			persistent = Util::Parse::Switch(arg);
+			break;
+		case AIS::KEY_SETTING_RESET:
+			reset = Util::Parse::Integer(arg, 0, 3600);
 			break;
 		case AIS::KEY_SETTING_UUID:
 			if (Util::Helper::isUUID(arg))
@@ -730,20 +711,8 @@ namespace IO
 		if (!filter.includeGPS())
 			return;
 
-		if (fmt == MessageFormat::NMEA)
-		{
-			for (int i = 0; i < len; i++)
-			{
-				SendAllDirect(data[i].getNMEA() + "\r\n");
-			}
-		}
-		else
-		{
-			for (int i = 0; i < len; i++)
-			{
-				SendAllDirect((data[i].getJSON() + "\r\n").c_str());
-			}
-		}
+		for (int i = 0; i < len; i++)
+			SendAllDirect((fmt == MessageFormat::NMEA ? data[i].getNMEA() : data[i].getJSON()) + "\r\n");
 	}
 
 	void TCPlistenerStreamer::Receive(const AIS::Message *data, int len, TAG &tag)

@@ -84,7 +84,9 @@ public:
 		}
 	}
 
-	virtual ~WebViewerLogger() = default;
+	// The Logger singleton outlives this object; the listener must be
+	// removed here or it keeps invoking a callback into freed memory.
+	virtual ~WebViewerLogger() { Stop(); }
 
 	void setSSE(IO::HTTPServer *s)
 	{
@@ -120,6 +122,8 @@ private:
 public:
 	std::string label;
 	std::string product, vendor, serial, model_name, sample_rate;
+
+	ReceiverTracker(const std::string &label = "") : label(label) {}
 
 	// Device metadata
 	void setDevice(Device::Device *device);
@@ -309,6 +313,8 @@ private:
 
 	AIS::Filter filter;
 
+	std::string pending_product, pending_vendor, pending_serial;
+
 	std::vector<std::string> parsePath(const std::string &url);
 	bool parseMBTilesURL(const std::string &url, std::string &layerID, int &z, int &x, int &y);
 	void addMBTilesSource(const std::string &filepath, bool overlay);
@@ -352,12 +358,14 @@ public:
 
 	~WebViewer()
 	{
-		if (showlog)
-			logger.Stop();
+		// ~TCPServer joins the server thread only after members are destroyed
+		stopThread();
 	}
 
 	bool &active() { return run; }
 	void connect(const std::vector<std::unique_ptr<Receiver>> &receivers);
+	void connect(AIS::Model &model, Connection<JSON::JSON> &json, Device::Device &device);
+	void setDeviceDescription(const std::string &product, const std::string &vendor, const std::string &serial);
 	void start();
 	void close();
 	void Reset();

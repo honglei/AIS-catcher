@@ -19,6 +19,9 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <sys/stat.h>
+#include <poll.h>
+#include <cerrno>
 #endif
 
 #include "FileRAW.h"
@@ -37,46 +40,60 @@ namespace Device
 #ifndef _WIN32
 			if (use_raw_stdin)
 			{
-				// Use POSIX read() for stdin: returns as soon as data is available,
-				// avoiding iostream overhead and istream::read blocking for full buffer
 				while (Device::isStreaming())
 				{
+					struct pollfd pfd;
+					pfd.fd = STDIN_FILENO;
+					pfd.events = POLLIN;
+					pfd.revents = 0;
+
+					int pr = poll(&pfd, 1, 250);
+					if (pr <= 0)
+					{
+						// timeout or EINTR: re-check isStreaming(); real error: stop
+						if (pr < 0 && errno != EINTR)
+							break;
+						continue;
+					}
+
 					ssize_t bytesRead = ::read(STDIN_FILENO, buffer.data(), buffer.size());
-					if (bytesRead <= 0) break;
+					if (bytesRead <= 0)
+						break;
 
 					fifo.Push(buffer.data(), (int)bytesRead);
 				}
 			}
 			else
 #endif
-			while (file && Device::isStreaming())
-			{
-
-				if (!file->eof())
+				while (file && Device::isStreaming())
 				{
-					file->read((char *)buffer.data(), buffer.size());
-					std::streamsize bytesRead = file->gcount();
 
-					if (bytesRead > 0) {
-						if(bytesRead < buffer.size())
-							std::memset(buffer.data() + bytesRead, 0, buffer.size() - bytesRead);
-
-						fifo.Push(buffer.data(), buffer.size());
-					}
-				}
-				else
-				{
-					if (loop)
+					if (!file->eof())
 					{
-						file->clear();
-						file->seekg(0, std::ios::beg);
+						file->read((char *)buffer.data(), buffer.size());
+						std::streamsize bytesRead = file->gcount();
+
+						if (bytesRead > 0)
+						{
+							if (bytesRead < buffer.size())
+								std::memset(buffer.data() + bytesRead, 0, buffer.size() - bytesRead);
+
+							fifo.Push(buffer.data(), buffer.size());
+						}
 					}
 					else
 					{
-						break;
+						if (loop)
+						{
+							file->clear();
+							file->seekg(0, std::ios::beg);
+						}
+						else
+						{
+							break;
+						}
 					}
 				}
-			}
 		}
 		catch (std::exception &e)
 		{
@@ -121,35 +138,43 @@ namespace Device
 		}
 	}
 
+	bool RAWFile::isReplay()
+	{
+		bool is_stdin = (filename == "." || filename == "stdin");
+#ifndef _WIN32
+		struct stat st;
+		if (is_stdin)
+			return fstat(STDIN_FILENO, &st) == 0 && S_ISREG(st.st_mode);
+		return stat(filename.c_str(), &st) != 0 || S_ISREG(st.st_mode);
+#else
+		return !is_stdin;
+#endif
+	}
+
 	void RAWFile::Play()
 	{
 		Device::Play();
 
-		bool is_stdin = (filename == "." || filename == "stdin");
+		bool is_text = getFormat() == Format::TXT || getFormat() == Format::BASESTATION || getFormat() == Format::BEAST || getFormat() == Format::RAW1090;
 
-		if (getFormat() != Format::TXT && getFormat() != Format::BASESTATION && getFormat() != Format::BEAST && getFormat() != Format::RAW1090)
+		if (!is_text)
 		{
-			fifo.Init(BUFFER_SIZE, BUFFER_COUNT);
-			buffer.resize(BUFFER_SIZE);
+			fifo.Init(BUFFER_SIZE_IQ, BUFFER_COUNT);
+			buffer.resize(BUFFER_SIZE_IQ);
 		}
 		else
 		{
-			fifo.Init(TXT_BLOCK_SIZE, BUFFER_SIZE);
-
-			if(is_stdin)
-				buffer.resize(TXT_BLOCK_SIZE);
-			else
-				buffer.resize(BUFFER_SIZE);
+			fifo.Init(TXT_BLOCK_SIZE, 2 * BUFFER_SIZE_TXT);
+			buffer.resize(BUFFER_SIZE_TXT);
 		}
 		fifo.setWait(lossless);
 
-		if (is_stdin)
+		if (filename == "." || filename == "stdin")
 		{
 #ifndef _WIN32
-			if (getFormat() == Format::TXT || getFormat() == Format::BASESTATION)
+			if (is_text)
 			{
 				use_raw_stdin = true;
-				buffer.resize(8192);
 			}
 			else
 #endif

@@ -170,7 +170,7 @@ namespace AIS
 			nmea_count = 0;
 			start_idx = 0;
 			end_idx = 0;
-			std::memset(data, 0, 128);
+			std::memset(data, 0, sizeof(data));
 		}
 
 		bool validate();
@@ -229,6 +229,18 @@ namespace AIS
 
 		bool setUint(int start, int len, unsigned val);
 		bool setInt(int start, int len, int val);
+
+		void setByteRaw(int i, uint8_t b)
+		{
+			if (i >= 0 && i < MAX_AIS_BYTES)
+				data[i] = b;
+		}
+		void setBytes(const uint8_t *src, int nbytes)
+		{
+			if (nbytes > MAX_AIS_BYTES)
+				nbytes = MAX_AIS_BYTES;
+			std::memcpy(data, src, nbytes);
+		}
 
 		void setBit(int i, bool b)
 		{

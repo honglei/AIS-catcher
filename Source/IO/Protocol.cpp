@@ -20,36 +20,12 @@
 #include <sys/types.h>
 
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include <mstcpip.h>
-
-#elif defined(__APPLE__)
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <unistd.h>
-
-#elif defined(__ANDROID__)
-
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <unistd.h>
-#include <android/log.h>
 #else
-
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <unistd.h>
-
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 #endif
 
 #include <errno.h>
@@ -76,7 +52,7 @@ namespace Protocol
 				stats->connected = false;
 
 			onDisconnect();
-			closesocket(sock);
+			Net::closeSocket(sock);
 		}
 
 		if (state == READY)
@@ -131,10 +107,11 @@ namespace Protocol
 	// Returns false if this address failed — sock is closed and reset to -1 so the caller can try the next.
 	bool TCP::connectAddress(struct addrinfo *p)
 	{
-		auto fail = [this]() -> bool {
+		auto fail = [this]() -> bool
+		{
 			if (sock != -1)
 			{
-				closesocket(sock);
+				Net::closeSocket(sock);
 				sock = -1;
 			}
 			return false;
@@ -188,31 +165,26 @@ namespace Protocol
 				setsockopt(sock, SOL_TCP, TCP_KEEPCNT, &count, sizeof(count)))
 				return fail();
 #endif
+
+			// Error a wedged (half-open / zero-window) socket instead of hanging forever.
+			const int user_timeout_ms = (idle + 5 * 2) * 1000;
+#if defined(TCP_USER_TIMEOUT)
+			if (setsockopt(sock, IPPROTO_TCP, TCP_USER_TIMEOUT, (const char *)&user_timeout_ms, sizeof(user_timeout_ms)))
+				Debug() << "TCP (" << host << ":" << port << "): TCP_USER_TIMEOUT not applied: " << strerror(errno);
+#elif defined(_WIN32) && defined(TCP_MAXRT)
+			DWORD maxrt_secs = (DWORD)(user_timeout_ms / 1000);
+			if (setsockopt(sock, IPPROTO_TCP, TCP_MAXRT, (const char *)&maxrt_secs, sizeof(maxrt_secs)))
+				Debug() << "TCP (" << host << ":" << port << "): TCP_MAXRT not applied. Error code: " << WSAGetLastError();
+#endif
 		}
 
 		if (persistent)
 		{
-#ifndef _WIN32
-			int fl = fcntl(sock, F_GETFL, 0);
-			if (fl == -1)
+			if (!Net::setNonBlocking(sock))
 			{
-				Error() << "TCP (" << host << ":" << port << "): fcntl F_GETFL failed: " << strerror(errno);
+				Error() << "TCP (" << host << ":" << port << "): failed to set non-blocking: " << Net::errorString(Net::lastError());
 				return fail();
 			}
-
-			if (fcntl(sock, F_SETFL, fl | O_NONBLOCK) == -1)
-			{
-				Error() << "TCP (" << host << ":" << port << "): fcntl F_SETFL failed: " << strerror(errno);
-				return fail();
-			}
-#else
-			u_long mode = 1;
-			if (ioctlsocket(sock, FIONBIO, &mode) != 0)
-			{
-				Error() << "TCP (" << host << ":" << port << "): ioctlsocket failed. Error code: " << WSAGetLastError();
-				return fail();
-			}
-#endif
 		}
 		else if (timeout > 0)
 		{
@@ -226,7 +198,7 @@ namespace Protocol
 				setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv_ms, sizeof(tv_ms)))
 				return fail();
 #else
-			struct timeval tv = { timeout, 0 };
+			struct timeval tv = {timeout, 0};
 			if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) ||
 				setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)))
 				return fail();
@@ -239,6 +211,7 @@ namespace Protocol
 		if (r != -1)
 		{
 			state = READY;
+			randomizeResetInterval();
 
 			Debug() << "TCP (" << host << ":" << port << "): connected.";
 
@@ -255,13 +228,8 @@ namespace Protocol
 
 			return true;
 		}
-#ifndef _WIN32
-		if (errno != EINPROGRESS)
+		if (!Net::connectInProgress(Net::lastError()))
 			return fail();
-#else
-		if (WSAGetLastError() != WSAEWOULDBLOCK)
-			return fail();
-#endif
 
 		// Non-blocking connect in progress.
 		if (isConnected(timeout))
@@ -316,6 +284,7 @@ namespace Protocol
 			}
 
 			state = READY;
+			randomizeResetInterval();
 
 			Debug() << "TCP (" << host << ":" << port << "): connected.";
 
@@ -333,9 +302,24 @@ namespace Protocol
 		return false;
 	}
 
+	void TCP::randomizeResetInterval()
+	{
+		if (reset_time <= 0)
+			return;
+
+		long base = (long)reset_time * 60;
+		long span = base / 10; // ±10%
+
+		static thread_local std::mt19937 gen(std::random_device{}());
+		std::uniform_int_distribution<long> dist(-span, span);
+
+		reset_interval = base + dist(gen);
+		Debug() << "TCP (" << host << ":" << port << "): reset in " << reset_interval << "s.";
+	}
+
 	void TCP::updateState()
 	{
-		if (state == READY && reset_time > 0 && std::difftime(time(nullptr), stamp) > reset_time * 60)
+		if (state == READY && reset_time > 0 && std::difftime(time(nullptr), stamp) > reset_interval)
 		{
 			Warning() << "TCP (" << host << ":" << port << "): connection expired, reconnect.";
 			reconnect();
@@ -376,15 +360,9 @@ namespace Protocol
 		int sent = ::send(sock, (char *)data, length, 0);
 		if (sent < 0)
 		{
-#ifdef _WIN32
-			int error_code = WSAGetLastError();
-			bool would_block = (error_code == WSAEWOULDBLOCK);
-#else
-			int error_code = errno;
-			bool would_block = (error_code == EAGAIN || error_code == EWOULDBLOCK);
-#endif
+			int error_code = Net::lastError();
 
-			if (would_block)
+			if (Net::wouldBlock(error_code))
 				return 0;
 
 			return handleNetworkError("send", error_code, 0);
@@ -438,7 +416,7 @@ namespace Protocol
 
 			if (select_result < 0)
 			{
-				int error_code = errno;
+				int error_code = Net::lastError();
 				if (error_code == EINTR)
 					break;
 
@@ -450,20 +428,23 @@ namespace Protocol
 
 			int received = recv(sock, buffer + total_received, remaining_length, 0);
 
-			if (received == 0)
-				return handleNetworkError("recv()", 0, total_received);
+			if (received == 0) // peer performed orderly shutdown (EOF), not an error
+			{
+				if (persistent)
+				{
+					Debug() << "TCP (" << host << ":" << port << "): connection closed by peer, reconnecting.";
+					reconnect();
+				}
+				else
+					disconnect();
+				break;
+			}
 
 			if (received < 0)
 			{
-#ifdef _WIN32
-				int error_code = WSAGetLastError();
-				bool would_block = (error_code == WSAEWOULDBLOCK);
-#else
-				int error_code = errno;
-				bool would_block = (error_code == EAGAIN || error_code == EWOULDBLOCK);
-#endif
+				int error_code = Net::lastError();
 
-				if (would_block)
+				if (Net::wouldBlock(error_code))
 				{
 					if (timeout)
 						continue;
@@ -1231,7 +1212,7 @@ namespace Protocol
 
 				// Validate topic_len to prevent integer underflow
 				int header_size = 2 + topic_len + (q > 0 ? 2 : 0);
-				if (header_size > length || topic_len < 0)
+				if (header_size > length)
 				{
 					Error() << "MQTT: Invalid topic length in PUBLISH packet";
 					disconnect();
@@ -1613,7 +1594,7 @@ namespace Protocol
 				return 0;
 
 			bool mask = buffer[1] & 0x80;
-			int length = buffer[1] & 0x7F;
+			int64_t length = buffer[1] & 0x7F;
 			int ptr = 2;
 
 			if (length == 126)
@@ -1629,19 +1610,17 @@ namespace Protocol
 				if (buffer_ptr < ptr + 8)
 					return 0;
 
-				uint64_t length64 = 0;
+				length = 0;
 				for (int i = 0; i < 8; ++i)
-					length64 = (length64 << 8) | buffer[ptr + i];
+					length = (length << 8) | buffer[ptr + i];
 
 				ptr += 8;
+			}
 
-				if (length64 > MAX_PACKET_SIZE)
-				{
-					Warning() << "WebSocket: message too long, skipped";
-					return -1;
-				}
-
-				length = (int)length64;
+			if (length < 0 || length > MAX_PACKET_SIZE)
+			{
+				Warning() << "WebSocket: message too long, skipped";
+				return -1;
 			}
 
 			uint8_t masking_key[4] = {0};

@@ -121,7 +121,7 @@ const ACTIONS = {
 
     // tableside / generic close buttons / dialog
     hideTablecard: () => hideTablecard(),
-    updateTableSort: (e) => updateTableSort(e),
+    updateTableSort: (e, dataset, el) => updateTableSort(e, dataset, el),
     closeSettings: () => closeSettings(),
     closeDialog: () => closeDialog(),
 
@@ -140,6 +140,8 @@ const ACTIONS = {
     setKioskPanMap: (e, d, el) => kiosk.setKioskPanMap(el.checked),
     setGraphVisibility: (e, d, el) => setGraphVisibility(d.graph, el.checked),
     setMapSetting: (e, d, el) => setMapSetting(d.key, el.type === 'checkbox' ? el.checked : el.value),
+    setBinaryDisplay: (e, d, el) => setBinaryDisplay(el.value),
+    setBinaryCategories: (e, d, el) => setBinaryCategories(Array.from(el.selectedOptions).map(o => o.value)),
     setRangeColor: (e, d, el) => setRangeColor(el.value, d.field),
     setMapSettingDistanceColor: (e, d, el) => { removeDistanceCircles(); setMapSetting('distance_circle_color', el.value); },
     setShowTrackOnSelect: (e, d, el) => { settings.show_track_on_select = el.checked; saveSettings(); },
@@ -169,6 +171,7 @@ const ACTIONS = {
     unpinCenter: () => unpinCenter(),
     showAllTracks: () => showAllTracks(),
     deleteAllTracks: () => deleteAllTracks(),
+    resetTracksFromNow: () => resetTracksFromNow(),
     startBoxSelect: () => { boxselect.start(); showNotification('Drag a rectangle to enable tracks (Esc to cancel)'); },
     ToggleFireworks: () => fireworks.toggle(),
     toggleLabel: () => toggleLabel(),
@@ -228,9 +231,10 @@ const ACTIONS = {
     openADSBExchangeCard: () => openExt('adsbexchange', card_mmsi),
     toggleStatcard: () => toggleStatcard(),
     toggleTablecard: () => toggleTablecard(),
-    mapSettingsContextMenu: (e) => showContextMenu(e, '', '', ['settings', 'center', 'ctx-map']),
+    mapSettingsContextMenu: (e, d, el) => showContextMenu(e, '', '', ['settings', 'ctx-map'], el),
     toggleCommunityPane: () => community.toggleCommunityPane(),
     showMapMenu: (e) => showMapMenu(e),
+    toggleAttribution: () => toggleAttribution(),
     mainspaceContextMenu: (e) => showContextMenu(e, 0, '', ['settings']),
     plotsContextMenu: (e) => showContextMenu(e, '', 'charts', ['settings', 'ctx-charts']),
 
@@ -335,6 +339,7 @@ let interval,
     activeReceiver = 0,
     lastPathFetch = 0,
     paths = {},
+    trackCutoff = 0,
     map,
     basemaps = {},
     overlapmaps = {},
@@ -346,6 +351,7 @@ let interval,
     binaryDB = {},
     binarySince = 0,
     binaryTimeout = 1800,
+    binaryMaxPerShip = 50,
     planesDB = {},
     planesSince = 0,
     planesTimeout = 300,
@@ -467,6 +473,8 @@ function restoreDefaultSettings() {
         tab: "map",
         show_labels: "dynamic",
         labels_declutter: true,
+        labels_prioritize_active: true,
+        labels_active_only: false,
         label_class_background: true,
         eri: true,
         loadURL: true,
@@ -474,6 +482,7 @@ function restoreDefaultSettings() {
         show_track_on_hover: false,
         show_track_on_select: false,
         shipcard_pinned: false,
+        shipcard_top_left: false,
         show_signal_graphs: true,
         show_ppm_graphs: true,
         shipcard_pinned_x: null,
@@ -482,7 +491,9 @@ function restoreDefaultSettings() {
         kiosk_pan_map: true,
         shiptable_columns: ["shipname", "mmsi", "imo", "callsign", "shipclass", "lat", "lon", "last_signal", "level", "distance", "bearing", "speed", "repeat", "ppm", "status"],
         realtime_background_streaming: false,
-        realtime_filter_mmsis: []
+        realtime_filter_mmsis: [],
+        binary_messages: "highlight",
+        binary_exclude: []
     });
 
     // Set default track colors
@@ -748,6 +759,11 @@ const planeStyle = function (feature) {
 };
 
 const labelStyle = function (feature) {
+    const isActive = (card_type === 'ship' && 'ship' in feature && feature.ship.mmsi == card_mmsi) ||
+                     (card_type === 'plane' && 'plane' in feature && feature.plane.hexident == card_mmsi);
+
+    if (settings.labels_active_only && !isActive) return new ol.style.Style({});
+
     const font = settings.tooltipLabelFontSize + "px Arial";
     const text = new ol.style.Text({
         text: decodeHTMLEntities('ship' in feature ?
@@ -776,7 +792,9 @@ const labelStyle = function (feature) {
         }));
     }
 
-    return new ol.style.Style({ text: text });
+    const isSelected = (settings.labels_prioritize_active ?? true) && isActive;
+
+    return new ol.style.Style({ text: text, zIndex: isSelected ? 1000 : 0 });
 };
 
 const hoverCircleStyleFunction = function (feature) {
@@ -798,7 +816,7 @@ const selectCircleStyleFunction = function (feature) {
     const iconScale = settings.icon_scale || 1.0;
     const circleScale = settings.circle_scale || 6.0;
     const radiusScale = 1 + (circleScale - 2.0) * 0.08; // Scale radius slightly with line width
-    return new ol.style.Style({
+    const styles = [new ol.style.Style({
         image: new ol.style.Circle({
             radius: 13 * iconScale * radiusScale,
             stroke: new ol.style.Stroke({
@@ -806,7 +824,17 @@ const selectCircleStyleFunction = function (feature) {
                 width: circleScale * iconScale
             })
         })
-    });
+    })];
+
+    if (card_type === 'ship') {
+        const ship = shipsDB[card_mmsi]?.raw;
+        if (ship && ship.imgSize) styles.push(markerStyle({ ship }));
+    } else if (card_type === 'plane') {
+        const plane = planesDB[card_mmsi]?.raw;
+        if (plane && plane.imgSize) styles.push(...planeStyle({ plane }));
+    }
+
+    return styles;
 }
 
 const binaryAssociatedOutline = new ol.style.Style({
@@ -821,7 +849,8 @@ const binaryStyleCache = new Map();
 const binaryStyle = function (feature) {
     const count = feature.get('binary_count') || feature.binary_count || 1;
     const isAssociated = feature.get('is_associated') || feature.is_associated;
-    const key = (isAssociated ? 'a:' : 'n:') + count;
+    const highlight = settings.binary_messages === 'highlight';
+    const key = (isAssociated ? 'a:' : 'n:') + (highlight ? 'h:' : 'b:') + count;
 
     let cached = binaryStyleCache.get(key);
     if (cached) return cached;
@@ -845,7 +874,7 @@ const binaryStyle = function (feature) {
             }),
             zIndex: 201
         });
-        cached = [binaryAssociatedOutline, badge];
+        cached = highlight ? [binaryAssociatedOutline, badge] : [badge];
     } else {
         const circle = new ol.style.Style({
             image: new ol.style.Circle({
@@ -940,7 +969,7 @@ const rangeLayer = new ol.layer.Vector({
 const labelLayer = new ol.layer.Vector({
     source: labelVector,
     style: labelStyle,
-    declutter: settings.labels_declutter || true
+    declutter: settings.labels_declutter ?? true
 });
 
 
@@ -1136,7 +1165,7 @@ function hideContextMenu(event) {
     document.removeEventListener("click", hideContextMenu);
 }
 
-function showContextMenu(event, mmsi, type, context) {
+function showContextMenu(event, mmsi, type, context, anchorEl) {
 
     if (event && event.preventDefault) {
         event.preventDefault();
@@ -1158,13 +1187,14 @@ function showContextMenu(event, mmsi, type, context) {
 
     const classList = ["station", "settings", "plane-map", "ship-map", "plane", "ship", "ctx-map", "copy-text", "table-menu", "ctx-shipcard", "ctx-charts"];
 
+    if (context.includes('object')) {
+        context.push(type);
+    }
+    if (context.includes('object-map')) {
+        context.push(type + "-map");
+    }
+
     classList.forEach((className) => {
-        if (context.includes('object')) {
-            context.push(type);
-        }
-        if (context.includes('object-map')) {
-            context.push(type + "-map");
-        }
         const shouldDisplay = context.includes(className);
         const elements = document.querySelectorAll("." + className);
         elements.forEach((element) => {
@@ -1204,7 +1234,18 @@ function showContextMenu(event, mmsi, type, context) {
 
     contextMenu.style.display = "block";
 
-    if (context.includes("center")) {
+    if (anchorEl) {
+        // Anchor above the control button (it sits near the bottom edge), so the
+        // menu unfurls upward instead of running off-screen.
+        contextMenu.style.transform = "none";
+        const btn = anchorEl.getBoundingClientRect();
+        const rect = contextMenu.getBoundingClientRect();
+        let left = Math.max(8, btn.right - rect.width);
+        let top = btn.top - rect.height - 8;
+        if (top < 8) top = Math.min(btn.bottom + 8, window.innerHeight - rect.height - 8);
+        contextMenu.style.left = left + "px";
+        contextMenu.style.top = top + "px";
+    } else if (context.includes("center")) {
         contextMenu.style.left = "50%";
         contextMenu.style.top = "50%";
         contextMenu.style.transform = "translate(-50%, -50%)";
@@ -1634,9 +1675,7 @@ function updateMarkerCountTooltip() {
     }
 }
 
-function updateTableSort(event) {
-    const header = event.currentTarget;
-
+function updateTableSort(event, dataset, header) {
     const column = header.getAttribute("data-column");
     const currentOrder = header.classList.contains("ascending") ? "ascending" : "descending";
 
@@ -2141,7 +2180,7 @@ async function fetchBinary() {
 
         messages.forEach((msg) => {
             const hasLocation = msg.message && msg.message.lat && msg.message.lon;
-            if (msg.message && msg.message.mmsi && (hasLocation || isInlandMessage(msg) || isTextMessage(msg))) {
+            if (msg.message && msg.message.mmsi && binaryIncluded(msg)) {
                 const mmsi = msg.message.mmsi;
 
                 if (!binaryDB[mmsi]) {
@@ -2169,8 +2208,13 @@ async function fetchBinary() {
             binarySince = serverTime;
             const cutoff = serverTime - binaryTimeout;
             for (const mmsi in binaryDB) {
-                binaryDB[mmsi].ship_messages = binaryDB[mmsi].ship_messages.filter(m => m.timestamp > cutoff);
-                if (binaryDB[mmsi].ship_messages.length === 0) delete binaryDB[mmsi];
+                let msgs = binaryDB[mmsi].ship_messages.filter(m => m.timestamp > cutoff);
+                if (msgs.length > binaryMaxPerShip) {
+                    msgs.sort((a, b) => b.timestamp - a.timestamp);
+                    msgs.length = binaryMaxPerShip;
+                }
+                if (msgs.length === 0) delete binaryDB[mmsi];
+                else binaryDB[mmsi].ship_messages = msgs;
             }
         }
 
@@ -2495,6 +2539,26 @@ function setMapSetting(a, v) {
     redrawMap();
 }
 
+function setBinaryDisplay(v) {
+    settings.binary_messages = v;
+    binaryStyleCache.clear();
+    saveSettings();
+    redrawMap();
+}
+
+function setBinaryCategories(shown) {
+    settings.binary_exclude = BINARY_CATEGORIES.filter(c => !shown.includes(c));
+    saveSettings();
+
+    binarySince = 0;
+    if (binaryLayer.isVisible() && binaryAnyShown()) {
+        fetchBinary().then(() => redrawMap());
+    } else {
+        binaryDB = {};
+        redrawMap();
+    }
+}
+
 function setTrackClassColor(shipClass, color) {
     settings.track_class_colors[ShippingClass[shipClass]] = color;
     saveSettings();
@@ -2735,6 +2799,8 @@ async function updateStatistics() {
                     html += `<div><span>Connect ok / fail</span><span>${s.connect_ok} / ${s.connect_fail}</span></div>`;
                 if (s.reconnects > 0)
                     html += `<div><span>Reconnects</span><span>${s.reconnects}</span></div>`;
+                if (s.dropped > 0)
+                    html += `<div><span>Dropped</span><span>${s.dropped}</span></div>`;
                 html += "</section>";
             }
             outputSection.innerHTML = html;
@@ -2974,9 +3040,9 @@ function showHoverTrack(mmsi) {
 }
 
 function toggleAttribution() {
-    const attribution = document.getElementById('map_attributions');
-    const currentDisplay = attribution.style.display;
-    attribution.style.display = currentDisplay === 'none' ? 'block' : 'none';
+    const foldout = document.getElementById('map-attribution-foldout');
+    if (!foldout) return;
+    foldout.style.display = foldout.style.display === 'block' ? 'none' : 'block';
 }
 
 function getTooltipContentBinary(mmsiOrBinary) {
@@ -3054,7 +3120,7 @@ function getBinaryMessageContent(binary, includeRaw = false) {
     }
 
     // Pressure
-    if ('pressure' in msg && msg.pressure != null) {
+    if ('pressure' in msg && msg.pressure != null && msg.pressure > 799) {
         let val = msg.pressure.toFixed(1) + ' hPa';
         if ('pressuretend' in msg && msg.pressuretend != null) {
             val += ' (' + ['steady', 'decreasing', 'increasing'][msg.pressuretend] + ')';
@@ -3123,6 +3189,20 @@ function isTextMessage(msg) {
     if (!msg.message) return false;
     const fi = msg.message.fid != null ? msg.message.fid : msg.message.fi;
     return msg.message.dac == 1 && (fi == 0 || fi == 29 || fi == 30);
+}
+
+const BINARY_CATEGORIES = ['data', 'inland', 'text'];
+
+function binaryIncluded(msg) {
+    const ex = settings.binary_exclude;
+    if (isTextMessage(msg)) return !ex.includes('text');
+    if (isInlandMessage(msg)) return !ex.includes('inland');
+    const hasLocation = msg.message && msg.message.lat && msg.message.lon;
+    return hasLocation && !ex.includes('data');
+}
+
+function binaryAnyShown() {
+    return BINARY_CATEGORIES.some(c => !settings.binary_exclude.includes(c));
 }
 
 function getTextMessageContent(msg) {
@@ -3472,8 +3552,8 @@ function convertStringBooleansToActual() {
         'counter', 'fading', 'android', 'kiosk', 'welcome', 'show_range',
         'distance_circles', 'table_shiptype_use_icon', 'fix_center',
         'show_circle_outline', 'dark_mode', 'setcoord', 'eri', 'loadURL',
-        'show_station', 'labels_declutter', 'label_class_background', 'show_track_on_hover',
-        'show_track_on_select', 'shipcard_max', 'kiosk_pan_map',
+        'show_station', 'labels_declutter', 'labels_prioritize_active', 'labels_active_only', 'label_class_background', 'show_track_on_hover',
+        'show_track_on_select', 'shipcard_max', 'shipcard_top_left', 'kiosk_pan_map',
         'show_signal_graphs', 'show_ppm_graphs'
     ];
 
@@ -3596,6 +3676,7 @@ function unpinCenter() {
 
 async function showAllTracks() {
     show_all_tracks = true;
+    trackCutoff = 0;
     lastPathFetch = 0;
     select_enabled_track = hover_enabled_track = false;
     await fetchTracks();
@@ -3622,6 +3703,7 @@ async function showTracksForMMSIs(mmsis) {
 
 function deleteAllTracks() {
     show_all_tracks = false;
+    trackCutoff = 0;
     lastPathFetch = 0;
     marker_tracks = new Set();
     let p = {};
@@ -3638,6 +3720,16 @@ function deleteAllTracks() {
     paths = p;
 
     redrawMap(); updateShipcardTrackOption();
+}
+
+async function resetTracksFromNow() {
+    trackCutoff = shipsSince || Math.floor(Date.now() / 1000);
+    paths = {};
+    lastPathFetch = 0;
+    await fetchTracks();
+    redrawMap();
+    updateShipcardTrackOption();
+    showNotification("Tracks reset — showing from now");
 }
 
 
@@ -3707,6 +3799,15 @@ async function fetchTracks() {
         if (!isDelta) paths = {};
         lastPathFetch = 0;
         return false;
+    }
+
+    if (trackCutoff > 0) {
+        for (const mmsi in paths) {
+            const arr = paths[mmsi];
+            let k = 0;
+            while (k < arr.length && arr[k][3] >= trackCutoff) k++;
+            paths[mmsi] = arr.slice(0, k + 1);
+        }
     }
 
     return true;
@@ -4223,6 +4324,16 @@ function toggleShipcardPin() {
     }
 }
 
+function placeTopLeft(aside) {
+    const mapSize = map.getSize();
+    const rect = aside.getBoundingClientRect();
+    if (mapSize && mapSize[0] >= rect.width + 20 && mapSize[1] >= rect.height + 20) {
+        aside.style.left = "10px";
+        aside.style.top = "10px";
+        aside.classList.add("floating");
+    }
+}
+
 function positionAside(pixel, aside) {
 
     stopHover();
@@ -4236,11 +4347,21 @@ function positionAside(pixel, aside) {
     if (settings.shipcard_pinned && settings.shipcard_pinned_x !== null && settings.shipcard_pinned_y !== null) {
         aside.style.left = `${settings.shipcard_pinned_x}px`;
         aside.style.top = `${settings.shipcard_pinned_y}px`;
+        aside.classList.add("floating");
         return;
     }
 
     aside.style.left = "";
     aside.style.top = "";
+    aside.classList.remove("floating");
+
+    if (settings.shipcard_top_left) {
+        placeTopLeft(aside);
+        adjustMapForShipcard(pixel);
+        return;
+    }
+
+    let placed = false;
 
     if (pixel) {
         const margin = 35;
@@ -4267,7 +4388,14 @@ function positionAside(pixel, aside) {
             } else {
                 aside.style.left = `${(mapSize[0] - shipCardWidth) / 2}px`;
             }
+
+            aside.classList.add("floating");
+            placed = true;
         }
+    }
+
+    if (!placed) {
+        placeTopLeft(aside);
     }
     adjustMapForShipcard(pixel);
 }
@@ -4416,6 +4544,7 @@ function showShipcard(type, m, pixel = undefined) {
     }
 
     trackLayer.changed();
+    labelLayer.changed();
     updateFocusMarker();
 }
 
@@ -4567,7 +4696,7 @@ async function updateMap() {
     await Promise.all([
         fetchTracks(),
         planeLayer.isVisible() ? fetchPlanes() : Promise.resolve(true),
-        binaryLayer.isVisible() ? fetchBinary() : Promise.resolve(true),
+        (binaryLayer.isVisible() && binaryAnyShown()) ? fetchBinary() : Promise.resolve(true),
         fetchRange(),
     ]);
 
@@ -4593,6 +4722,8 @@ async function updateMap() {
 
 function redrawBinaryMessages() {
     binaryVector.clear();
+
+    if (settings.binary_messages === 'off') return;
 
     const gridCells = {}; // For clustering standalone messages
     const gridSize = 0.01; // Grid size in degrees (approx. 1km)
@@ -4955,7 +5086,7 @@ async function openFocus(m, z) {
 
     selectMapTab(m);
 
-    let ship = shipsDB[m].raw;
+    let ship = shipsDB[m] && shipsDB[m].raw;
     if (ship && ship.lon && ship.lat) {
         let shipCoords = ol.proj.fromLonLat([ship.lon, ship.lat]);
         let view = map.getView();
@@ -4983,10 +5114,16 @@ function updateSettingsTab() {
     document.getElementById("settings_distance_circle_color").value = settings.distance_circle_color;
 
     document.getElementById("settings_labels_declutter").checked = settings.labels_declutter;
+    document.getElementById("settings_labels_prioritize_active").checked = settings.labels_prioritize_active;
+    document.getElementById("settings_labels_active_only").checked = settings.labels_active_only;
     document.getElementById("settings_label_class_background").checked = settings.label_class_background;
     document.getElementById("settings_tooltipLabelFontsize").value = settings.tooltipLabelFontSize;
 
     document.getElementById("settings_show_labels").value = settings.show_labels.toLowerCase();
+
+    document.getElementById("settings_binary_messages").value = settings.binary_messages;
+    Array.from(document.getElementById("settings_binary_categories").options).forEach(
+        o => { o.selected = !settings.binary_exclude.includes(o.value); });
 
     document.getElementById("settings_shipoutline_border").value = settings.shipoutline_border;
     document.getElementById("settings_shipoutline_inner").value = settings.shipoutline_inner;
@@ -5022,6 +5159,7 @@ function updateSettingsTab() {
     document.getElementById("settings_table_shiptype_use_icon").checked = settings.table_shiptype_use_icon;
     document.getElementById("settings_show_track_on_hover").checked = settings.show_track_on_hover;
     document.getElementById("settings_show_track_on_select").checked = settings.show_track_on_select;
+    document.getElementById("settings_shipcard_top_left").checked = settings.shipcard_top_left;
 
     document.getElementById("settings_kiosk_mode").checked = settings.kiosk;
     document.getElementById("settings_kiosk_rotation_speed").value = settings.kiosk_rotation_speed;
@@ -5128,11 +5266,12 @@ function selectTab() {
     //document.getElementById(settings.tab + "_tab").click();
 }
 
+const androidStyle = document.createElement("style");
+document.head.appendChild(androidStyle);
+
 function updateAndroid() {
     const sel = isAndroid() ? ".noandroid" : ".android";
-    document.querySelectorAll(sel).forEach((el) => {
-        el.style.setProperty("display", "none", "important");
-    });
+    androidStyle.textContent = sel + " { display: none !important; }";
 }
 
 function updateKioskSpeedDisplay(value) {
@@ -5324,6 +5463,9 @@ function makeDraggable(dragHandle, dragTarget) {
                 const newX = e.clientX - offsetX;
                 const newY = e.clientY - offsetY;
 
+                // clear right/bottom anchor so a right-anchored element moves instead of stretching
+                dragTarget.style.right = 'auto';
+                dragTarget.style.bottom = 'auto';
                 dragTarget.style.left = `${newX}px`;
                 dragTarget.style.top = `${newY}px`;
 
