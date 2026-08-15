@@ -1,4 +1,4 @@
-name: aiscat — Python 3.15 clean-config validation
+name: aiscat — Python wheel regression validation
 
 on:
   push:
@@ -9,20 +9,19 @@ permissions:
 
 jobs:
   build_wheels:
-    name: Build cp315/cp315t (Linux x86_64)
+    name: Build configured CPython wheels (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build and test Python 3.15 wheels
+      - name: Build and test configured CPython wheels
         uses: pypa/cibuildwheel@v4.2.0
         env:
           CIBW_ARCHS: x86_64
-          CIBW_BUILD: "cp315-* cp315t-*"
         with:
           package-dir: python
 
       - uses: actions/upload-artifact@v7
         with:
-          name: python315-linux-x86_64
+          name: python-linux-x86_64
           path: ./wheelhouse/*.whl
