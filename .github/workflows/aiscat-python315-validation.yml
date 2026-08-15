@@ -1,0 +1,45 @@
+name: aiscat — Python 3.15 validation
+
+on:
+  push:
+    branches: [validate-python315]
+
+permissions:
+  contents: read
+
+jobs:
+  build_wheels:
+    name: Build cp315/cp315t (${{ matrix.os }} ${{ matrix.archs }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    archs: x86_64 }
+          - { os: ubuntu-latest,    archs: armv7l,  qemu: arm }
+          - { os: ubuntu-24.04-arm, archs: aarch64 }
+          - { os: macos-14,         archs: auto }
+          - { os: windows-latest,   archs: AMD64 }
+          - { os: windows-11-arm,   archs: ARM64 }
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: ${{ matrix.qemu }}
+
+      - name: Build and test Python 3.15 wheels
+        uses: pypa/cibuildwheel@v4.2.0
+        env:
+          CIBW_ARCHS: ${{ matrix.archs }}
+          CIBW_BUILD: "cp315-* cp315t-*"
+        with:
+          package-dir: python
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python315-${{ matrix.os }}-${{ matrix.archs }}
+          path: ./wheelhouse/*.whl
