@@ -575,15 +575,43 @@ jobs:
 
     - name: Download SDRPlay API
       run: |
+        $ErrorActionPreference = "Stop"
+        $PSNativeCommandUseErrorActionPreference = $true
+        $ProgressPreference = "SilentlyContinue"
         cd "C:/Program Files/"
-        Invoke-WebRequest -Uri " https://www.sdrplay.com/software/SDRplay_RSP_API-Windows-3.09.exe" -OutFile sdrplay.exe        
-        choco install innoextract 
+        # SDRplay replaced the old /software/ direct links with this official
+        # Hardware API package. Package ID 1905 is the Windows API download.
+        $apiUrl = "https://sdrplay.com/download/hardware-api-windows/?wpdmdl=1905"
+        Invoke-WebRequest -Uri $apiUrl -OutFile sdrplay.exe -MaximumRetryCount 2 -RetryIntervalSec 10 -TimeoutSec 180
+
+        $signature = Get-AuthenticodeSignature sdrplay.exe
+        if ($signature.Status -ne "Valid") {
+          throw "SDRplay installer signature is not valid: $($signature.Status)"
+        }
+
+        choco install innoextract --no-progress -y
         innoextract sdrplay.exe
-        ren app SDRplay
+        $requiredFiles = @(
+          "app/API/inc/sdrplay_api.h",
+          "app/API/x64/sdrplay_api.lib",
+          "app/API/x64/sdrplay_api.dll",
+          "app/API/x86/sdrplay_api.lib",
+          "app/API/x86/sdrplay_api.dll"
+        )
+        foreach ($file in $requiredFiles) {
+          if (-not (Test-Path $file)) {
+            throw "SDRplay installer is missing expected file: $file"
+          }
+        }
+        Move-Item app SDRplay
 
     - name: Building with SDRPlay support
       run: |
-        cp "C:\Program Files\SDRplay\API\docs\SDRplay_RSP_API_Release_Notes_V3.09.pdf" output\Licenses\SDRPLAY.pdf
+        $releaseNotes = Get-ChildItem "C:\Program Files\SDRplay\API\docs" -Filter "SDRplay_RSP_API_Release_Notes_V*.pdf" | Select-Object -First 1
+        if (-not $releaseNotes) {
+          throw "SDRplay API release notes were not found"
+        }
+        Copy-Item $releaseNotes.FullName output\Licenses\SDRPLAY.pdf
 
         echo "x64" > x64-a; echo "Win32" > x86-a; $msplatform = $(cat "${{matrix.platform}}-a")
         $gen = "Visual Studio 17 2022"
